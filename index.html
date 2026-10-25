@@ -307,6 +307,10 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   const NAVAL_RANGE_BASE_KM = 3500;
   const NAVAL_RANGE_PER_POWER = 700;
   const MAX_SIMULTANEOUS_ATTACKS = 3;
+  // Default Supabase project configuration (publishable key; safe for browser clients).
+  const DEFAULT_SUPABASE_URL = 'https://xievkxjfzziwmrwmerpw.supabase.co';
+  const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_GqsKaFYxZtpaQizuXsRtrg_HqXMDTPO';
+  const DEFAULT_MULTIPLAYER_ROOM = 'nationscraft-world';
   const NUCLEAR_MISS_DELIVERY_CHANCE = 0.07;
   const POWER = {
     USA:100, CHN:96, RUS:79, IND:61, FRA:50, GBR:49, KOR:44, JPN:43, TUR:39, DEU:38,
@@ -649,13 +653,12 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   function computeWinChance(attacker,defender){
     const attackerId=resolveOwnerId(attacker),defenderId=resolveOwnerId(defender.id);
     const a=powerOfOwner(attackerId),d=Math.max(1,powerOfOwner(defenderId));
-    const rawRatio=a/d,defenseMultiplier=countryDefenseMultiplier(defender);
-    const ratio=rawRatio/Math.max(1,defenseMultiplier);
-    // A battle win means a local breakthrough, never immediate total conquest.
-    // The log-odds curve strongly penalizes attackers with much less effective power.
-    const odds=Math.pow(Math.max(.001,ratio),1.65);
-    const chance=Math.max(.015,Math.min(.90,odds/(1+odds)));
-    return {chance,ratio,rawRatio,a,d,defenseMultiplier,impossible:ratio<.035};
+    const ratio=a/d;
+    if(ratio<0.12)return {chance:0,ratio,a,d,impossible:true};
+    let chance=0.5+0.45*Math.log(ratio)-0.06;
+    chance=Math.max(0.06,Math.min(0.92,chance));
+    chance=Math.max(0.03,Math.min(0.90,chance*0.84));
+    return {chance,ratio,a,d,impossible:false};
   }
   function distanceKm(a,b){
     if(!a||!b)return Infinity;
@@ -1251,29 +1254,16 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
     if(!options.navalRouteFailed&&!options.navalIntercepted)animateTerritoryResult(won?player.id:targetOwnerId,won);
     setTimeout(()=>{completeBattleContext(ctx);renderConquest();},options.navalIntercepted?1700:1500);
   }
-  function rollCampaignOutcome(chance,targetTerritoryId,attackerId,effectiveRatio=1){
-    const safeChance=Math.max(.005,Math.min(.90,Number(chance)||.005));
-    const prior=state.frontlines?.[targetTerritoryId];
+  function rollCampaignOutcome(chance,targetTerritoryId,attackerId){
+    const safeChance=Math.max(.01,Math.min(.99,Number(chance)||.01)),roll=Math.random(),prior=state.frontlines?.[targetTerritoryId];
     const sameFront=!!(prior&&resolveOwnerId(prior.attackerId)===resolveOwnerId(attackerId));
     const startProgress=sameFront?Math.max(0,Math.min(.95,Number(prior.progress)||0)):0;
-    const ratio=Math.max(.01,Math.min(100,Number(effectiveRatio)||1));
-    const ratioPower=Math.pow(ratio,.60),pressure=ratioPower/(1+ratioPower);
-    // Territory depth increases the amount of effort needed to occupy a large country.
-    const depth=1+Math.min(.75,Math.max(0,Math.log10(Math.max(1,countryAreaKm2(targetTerritoryId))/100000))*.10);
-    const maxAdvance=Math.min(.095,(.009+.085*pressure)/depth);
-    const roll=Math.random();let delta=0,result='held';
-    if(roll<safeChance){
-      // A successful battle is a local breakthrough, not an instant surrender.
-      delta=maxAdvance*(.78+Math.random()*.44);result='breakthrough';
-    }else{
-      const limitedChance=Math.min(.13,.025+.085*Math.sqrt(pressure));
-      if(roll<safeChance+limitedChance){delta=maxAdvance*(.08+Math.random()*.18);result='limited';}
-      else if(sameFront&&startProgress>0&&Math.random()<(.08+.16*(1-pressure))){delta=-Math.min(startProgress,maxAdvance*(.10+Math.random()*.16));result='repelled';}
-    }
-    const finalProgress=Math.max(0,Math.min(.995,startProgress+delta));
-    // Only a campaign already close to full occupation can produce total surrender.
-    const won=finalProgress>=.985;
-    return {won,roll,startProgress,finalProgress:won?1:finalProgress,result,delta,ratio};
+    if(roll<safeChance)return {won:true,roll,startProgress,finalProgress:1};
+    const closeness=Math.max(0,Math.min(1,(1-roll)/(1-safeChance)));
+    const maxAdvance=.03+.84*Math.pow(safeChance,.75),localAdvance=.015+(maxAdvance-.015)*Math.pow(closeness,1.35);let finalProgress=localAdvance;
+    if(sameFront)finalProgress=Math.max(startProgress,Math.min(.95,startProgress+Math.max(0,(localAdvance-.34)*.42)));
+    else if(prior&&localAdvance<=Number(prior.progress||0)+.08)finalProgress=Math.min(.02,localAdvance);
+    return {won:false,roll,startProgress,finalProgress};
   }
   function findTransitRoute(playerOwnerId,targetOwnerId){
     const starts=Object.values(state.countries).filter(c=>resolveOwnerId(c.id)===playerOwnerId).map(c=>c.id);
@@ -1566,10 +1556,15 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   function chooseFlag(key){const item=getFlagCatalog().find(x=>x.key===key);if(!item)return;pendingFlagCode=item.key;pendingFlagEmoji=item.emoji;els('countryFlag').value=item.emoji;els('flagPreview').innerHTML=`<img class="flag-img" src="${escapeHtml(item.asset)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><span class="flag-fallback" style="display:none">${escapeHtml(item.emoji)}</span>`;els('flagChoiceLabel').textContent=item.label;els('flagDialog').close();}
   // Multiplayer controls
   const savedMpConfig=mpConfigRead();
-  if(savedMpConfig.url)els('mpProjectUrl').value=savedMpConfig.url;
-  if(savedMpConfig.key)els('mpPublishableKey').value=savedMpConfig.key;
-  if(savedMpConfig.room)els('mpRoomCode').value=savedMpConfig.room;else els('mpRoomCode').value='nationscraft-'+Math.random().toString(36).slice(2,8);
+  els('mpProjectUrl').value=DEFAULT_SUPABASE_URL;
+  els('mpPublishableKey').value=DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  // Prefer a previously chosen custom room, but replace old autogenerated per-browser codes
+  // with one shared default so two fresh copies enter the same world.
+  const savedRoom=String(savedMpConfig.room||'').trim();
+  const wasOldAutoRoom=/^nationscraft-[a-z0-9]{6}$/i.test(savedRoom);
+  els('mpRoomCode').value=(savedRoom&&!wasOldAutoRoom)?savedRoom:DEFAULT_MULTIPLAYER_ROOM;
   if(savedMpConfig.nickname)els('mpNickname').value=savedMpConfig.nickname;
+  mpConfigWrite();
   ['mpProjectUrl','mpPublishableKey','mpRoomCode','mpNickname'].forEach(id=>els(id).addEventListener('change',mpConfigWrite));
   els('multiplayerBtn').addEventListener('click',mpOpenDialog);
   els('closeMultiplayerDialog').addEventListener('click',()=>els('multiplayerDialog').close());
